@@ -1,7 +1,145 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
 
 void main() {
   runApp(const MyApp());
+}
+
+/// Servicio de persistencia para datos de la aplicación
+class PersistenceService {
+  static const String _habitsKey = 'daily_habits';
+
+  static const String _themeKey = 'theme_settings';
+
+  /// Guardar hábitos completados del día
+  static Future<void> saveHabitsProgress(String date, List<Map<String, dynamic>> habits) async {
+    final prefs = await SharedPreferences.getInstance();
+    final habitsData = await getHabitsProgress();
+    
+    // Guardar solo los hábitos completados
+    final completedHabits = habits.where((h) => h['completed'] == true)
+        .map((h) => h['name'].toString()).toList();
+    
+    habitsData[date] = completedHabits;
+    await prefs.setString(_habitsKey, jsonEncode(habitsData));
+  }
+
+  /// Obtener hábitos completados
+  static Future<Map<String, List<String>>> getHabitsProgress() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final data = prefs.getString(_habitsKey);
+      if (data == null) return {};
+      
+      final decoded = jsonDecode(data);
+      if (decoded is! Map<String, dynamic>) return {};
+      
+      return decoded.map((key, value) => 
+          MapEntry(key, value is List ? List<String>.from(value) : <String>[]));
+    } catch (e) {
+      // En caso de error, devolver mapa vacío
+      return {};
+    }
+  }
+
+  /// Verificar si un hábito fue completado en una fecha específica
+  static Future<bool> isHabitCompletedOnDate(String date, String habitName) async {
+    final progress = await getHabitsProgress();
+    return progress[date]?.contains(habitName) ?? false;
+  }
+
+  /// Obtener estadísticas del mes
+  static Future<Map<String, dynamic>> getMonthlyStats(DateTime month) async {
+    final progress = await getHabitsProgress();
+    
+    int totalDays = 0;
+    int completedDays = 0;
+    int gymDays = 0;
+    int habitDays = 0;
+    
+    // Contar días del mes
+    final daysInMonth = DateTime(month.year, month.month + 1, 0).day;
+    final now = DateTime.now();
+    
+    for (int day = 1; day <= daysInMonth; day++) {
+      final currentDate = DateTime(month.year, month.month, day);
+      if (currentDate.isAfter(now)) break; // No contar días futuros
+      
+      totalDays++;
+      final dateStr = '${currentDate.year}-${currentDate.month.toString().padLeft(2, '0')}-${currentDate.day.toString().padLeft(2, '0')}';
+      final dayHabits = progress[dateStr] ?? [];
+      
+      if (dayHabits.isNotEmpty) completedDays++;
+      if (dayHabits.any((h) => _isGymExercise(h))) gymDays++;
+      if (dayHabits.any((h) => !_isGymExercise(h))) habitDays++;
+    }
+    
+    return {
+      'totalDays': totalDays < 0 ? 0 : totalDays,
+      'completedDays': completedDays < 0 ? 0 : completedDays,
+      'gymDays': gymDays < 0 ? 0 : gymDays,
+      'habitDays': habitDays < 0 ? 0 : habitDays,
+    };
+  }
+
+  /// Obtener estadísticas semanales
+  static Future<Map<String, dynamic>> getWeeklyStats(DateTime startOfWeek) async {
+    final progress = await getHabitsProgress();
+    int completedDays = 0;
+    int gymDays = 0;
+    int habitDays = 0;
+    
+    for (int i = 0; i < 7; i++) {
+      final currentDate = startOfWeek.add(Duration(days: i));
+      if (currentDate.isAfter(DateTime.now())) break;
+      
+      final dateStr = '${currentDate.year}-${currentDate.month.toString().padLeft(2, '0')}-${currentDate.day.toString().padLeft(2, '0')}';
+      final dayHabits = progress[dateStr] ?? [];
+      
+      if (dayHabits.isNotEmpty) completedDays++;
+      if (dayHabits.any((h) => _isGymExercise(h))) gymDays++;
+      if (dayHabits.any((h) => !_isGymExercise(h))) habitDays++;
+    }
+    
+    return {
+      'completedDays': completedDays < 0 ? 0 : completedDays,
+      'gymDays': gymDays < 0 ? 0 : gymDays,
+      'habitDays': habitDays < 0 ? 0 : habitDays,
+    };
+  }
+
+  /// Verificar si un hábito es ejercicio de gym
+  static bool _isGymExercise(String habitName) {
+    final gymKeywords = [
+      'press', 'remo', 'jalon', 'sentadilla', 'extension', 'femoral', 
+      'aductor', 'gemelo', 'apertura', 'hombro', 'tricep', 'bicep', 
+      'militar', 'martillo', 'polea'
+    ];
+    
+    return gymKeywords.any((keyword) => 
+        habitName.toLowerCase().contains(keyword));
+  }
+
+  /// Guardar configuración de tema
+  static Future<void> saveThemeSettings(ThemeMode mode, Color color) async {
+    final prefs = await SharedPreferences.getInstance();
+    final settings = {
+      'mode': mode.index,
+      'color': color.value,
+    };
+    await prefs.setString(_themeKey, jsonEncode(settings));
+  }
+
+  /// Cargar configuración de tema
+  static Future<Map<String, dynamic>> loadThemeSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    final data = prefs.getString(_themeKey);
+    if (data == null) {
+      return {'mode': ThemeMode.system.index, 'color': Colors.deepPurple.value};
+    }
+    return jsonDecode(data);
+  }
 }
 
 /// Clase para manejar el estado de temas
@@ -15,10 +153,19 @@ class ThemeProvider extends ChangeNotifier {
   void setThemeMode(ThemeMode mode) {
     _themeMode = mode;
     notifyListeners();
+    PersistenceService.saveThemeSettings(_themeMode, _seedColor);
   }
 
   void setSeedColor(Color color) {
     _seedColor = color;
+    notifyListeners();
+    PersistenceService.saveThemeSettings(_themeMode, _seedColor);
+  }
+
+  Future<void> loadSettings() async {
+    final settings = await PersistenceService.loadThemeSettings();
+    _themeMode = ThemeMode.values[settings['mode']];
+    _seedColor = Color(settings['color']);
     notifyListeners();
   }
 
@@ -49,6 +196,12 @@ class MyApp extends StatefulWidget {
 
 class _MyAppState extends State<MyApp> {
   final ThemeProvider _themeProvider = ThemeProvider();
+
+  @override
+  void initState() {
+    super.initState();
+    _themeProvider.loadSettings();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -265,10 +418,11 @@ class _HomeScreenState extends State<HomeScreen> {
     _loadTodaysRoutine();
   }
 
-  void _loadTodaysRoutine() {
+  void _loadTodaysRoutine() async {
     // Obtener día de la semana actual (1=Lunes, 7=Domingo)
     final now = DateTime.now();
     final weekday = now.weekday;
+    final todayStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
     
     // Hábitos base
     final baseHabits = [
@@ -279,21 +433,41 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // Agregar ejercicios del día
     final todayRoutine = _gymRoutines[weekday];
-    final exerciseHabits = todayRoutine?['exercises']?.map<Map<String, dynamic>>((exercise) => {
+    final exercises = todayRoutine?['exercises'] as List<String>?;
+    final exerciseHabits = exercises?.map<Map<String, dynamic>>((exercise) => {
       'name': exercise,
       'completed': false,
       'type': 'exercise'
-    }).toList() ?? [];
+    }).toList() ?? <Map<String, dynamic>>[];
+
+    final allHabits = <Map<String, dynamic>>[...baseHabits, ...exerciseHabits];
+    
+    // Cargar estado persistido del día
+    for (var habit in allHabits) {
+      final isCompleted = await PersistenceService.isHabitCompletedOnDate(todayStr, habit['name']);
+      habit['completed'] = isCompleted;
+    }
 
     setState(() {
-      _habits = [...baseHabits, ...exerciseHabits];
+      _habits = allHabits;
     });
   }
 
-  void _toggleHabit(int index) {
+  void _toggleHabit(int index) async {
     setState(() {
       _habits[index]['completed'] = !_habits[index]['completed'];
     });
+    
+    // Guardar progreso
+    final now = DateTime.now();
+    final todayStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+    await PersistenceService.saveHabitsProgress(todayStr, _habits);
+    
+    // Disparar actualización global para notificar cambios
+    // Esto forzará que las otras vistas se actualicen
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   void _addNewHabit() {
@@ -377,8 +551,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     const SizedBox(height: 8),
                     LinearProgressIndicator(
-                      value: _habits.where((h) => h['completed']).length /
-                          _habits.length,
+                      value: _habits.isEmpty ? 0.0 : 
+                          _habits.where((h) => h['completed']).length / _habits.length,
                     ),
                     const SizedBox(height: 8),
                     Text(
@@ -456,33 +630,9 @@ class GoalsScreen extends StatefulWidget {
 class _GoalsScreenState extends State<GoalsScreen> with TickerProviderStateMixin {
   late TabController _tabController;
   
-  // Datos simulados de progreso mensual y semanal
-  final Map<String, Map<String, dynamic>> _monthlyProgress = {
-    'Noviembre 2025': {
-      'totalDays': 30,
-      'completedDays': 18,
-      'gymDays': 15,
-      'habitDays': 22,
-      'weeklyData': [
-        {'week': 'Semana 1', 'completed': 4, 'total': 7},
-        {'week': 'Semana 2', 'completed': 5, 'total': 7},
-        {'week': 'Semana 3', 'completed': 6, 'total': 7},
-        {'week': 'Semana 4', 'completed': 3, 'total': 7},
-      ]
-    },
-    'Octubre 2025': {
-      'totalDays': 31,
-      'completedDays': 22,
-      'gymDays': 18,
-      'habitDays': 25,
-      'weeklyData': [
-        {'week': 'Semana 1', 'completed': 6, 'total': 7},
-        {'week': 'Semana 2', 'completed': 5, 'total': 7},
-        {'week': 'Semana 3', 'completed': 7, 'total': 7},
-        {'week': 'Semana 4', 'completed': 4, 'total': 7},
-      ]
-    }
-  };
+
+  
+
 
   // Lista de objetivos a largo plazo
   final List<Map<String, dynamic>> _longTermGoals = [
@@ -521,9 +671,35 @@ class _GoalsScreenState extends State<GoalsScreen> with TickerProviderStateMixin
     super.dispose();
   }
 
+
+
   Widget _buildMonthlyView() {
-    final currentMonth = 'Noviembre 2025';
-    final data = _monthlyProgress[currentMonth]!;
+    return FutureBuilder<Map<String, dynamic>>(
+      future: PersistenceService.getMonthlyStats(DateTime.now()),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        
+        final data = snapshot.data ?? {
+          'totalDays': 0,
+          'completedDays': 0,
+          'gymDays': 0,
+          'habitDays': 0,
+        };
+        
+        return _buildMonthlyContent(data);
+      },
+    );
+  }
+  
+  Widget _buildMonthlyContent(Map<String, dynamic> data) {
+    final now = DateTime.now();
+    final monthNames = [
+      'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+      'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+    ];
+    final currentMonth = '${monthNames[now.month - 1]} ${now.year}';
     
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
@@ -542,42 +718,18 @@ class _GoalsScreenState extends State<GoalsScreen> with TickerProviderStateMixin
                     style: Theme.of(context).textTheme.headlineSmall,
                   ),
                   const SizedBox(height: 16),
-                  _buildStatCard('Días Completados', '${data['completedDays']}/${data['totalDays']}', 
-                      Icons.calendar_today, data['completedDays'] / data['totalDays']),
+                  _buildStatCard('Días Completados', '${data['completedDays'] ?? 0}/${data['totalDays'] ?? 0}', 
+                      Icons.calendar_today, (data['totalDays'] ?? 0) > 0 ? (data['completedDays'] ?? 0) / (data['totalDays'] ?? 1) : 0.0),
                   const SizedBox(height: 12),
-                  _buildStatCard('Días de Gym', '${data['gymDays']}/${data['totalDays']}', 
-                      Icons.fitness_center, data['gymDays'] / data['totalDays']),
+                  _buildStatCard('Días de Gym', '${data['gymDays'] ?? 0}/${data['totalDays'] ?? 0}', 
+                      Icons.fitness_center, (data['totalDays'] ?? 0) > 0 ? (data['gymDays'] ?? 0) / (data['totalDays'] ?? 1) : 0.0),
                   const SizedBox(height: 12),
-                  _buildStatCard('Días con Hábitos', '${data['habitDays']}/${data['totalDays']}', 
-                      Icons.check_circle, data['habitDays'] / data['totalDays']),
+                  _buildStatCard('Días con Hábitos', '${data['habitDays'] ?? 0}/${data['totalDays'] ?? 0}', 
+                      Icons.check_circle, (data['totalDays'] ?? 0) > 0 ? (data['habitDays'] ?? 0) / (data['totalDays'] ?? 1) : 0.0),
                 ],
               ),
             ),
           ),
-          const SizedBox(height: 16),
-          // Progreso semanal
-          Text(
-            'Progreso Semanal',
-            style: Theme.of(context).textTheme.titleLarge,
-          ),
-          const SizedBox(height: 8),
-          ...data['weeklyData'].map<Widget>((week) => Card(
-            margin: const EdgeInsets.symmetric(vertical: 4),
-            child: ListTile(
-              leading: CircleAvatar(
-                backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-                child: Text('${week['completed']}'),
-              ),
-              title: Text(week['week']),
-              subtitle: LinearProgressIndicator(
-                value: week['completed'] / week['total'],
-              ),
-              trailing: Text(
-                '${week['completed']}/${week['total']}',
-                style: Theme.of(context).textTheme.bodyLarge,
-              ),
-            ),
-          )).toList(),
           const SizedBox(height: 16),
           // Objetivos a largo plazo
           Text(
@@ -585,7 +737,7 @@ class _GoalsScreenState extends State<GoalsScreen> with TickerProviderStateMixin
             style: Theme.of(context).textTheme.titleLarge,
           ),
           const SizedBox(height: 8),
-          ..._longTermGoals.map((goal) => Card(
+          ...(_longTermGoals).map((goal) => Card(
             margin: const EdgeInsets.symmetric(vertical: 4),
             child: Padding(
               padding: const EdgeInsets.all(16.0),
@@ -606,7 +758,8 @@ class _GoalsScreenState extends State<GoalsScreen> with TickerProviderStateMixin
                   ),
                   const SizedBox(height: 8),
                   LinearProgressIndicator(
-                    value: goal['current'] / goal['target'],
+                    value: (goal['target'] ?? 1) > 0 ? 
+                           (goal['current'] ?? 0) / (goal['target'] ?? 1) : 0.0,
                   ),
                   const SizedBox(height: 8),
                   Row(
@@ -626,6 +779,10 @@ class _GoalsScreenState extends State<GoalsScreen> with TickerProviderStateMixin
   }
 
   Widget _buildStatCard(String title, String value, IconData icon, double progress) {
+    // Asegurar que el progreso esté entre 0.0 y 1.0 y no sea NaN
+    final safeProgress = progress.isNaN || progress.isInfinite ? 0.0 : 
+                       progress.clamp(0.0, 1.0);
+    
     return Row(
       children: [
         Icon(icon, size: 24),
@@ -636,7 +793,7 @@ class _GoalsScreenState extends State<GoalsScreen> with TickerProviderStateMixin
             children: [
               Text(title, style: const TextStyle(fontSize: 14)),
               const SizedBox(height: 4),
-              LinearProgressIndicator(value: progress),
+              LinearProgressIndicator(value: safeProgress),
             ],
           ),
         ),
@@ -650,86 +807,113 @@ class _GoalsScreenState extends State<GoalsScreen> with TickerProviderStateMixin
     final now = DateTime.now();
     final startOfWeek = now.subtract(Duration(days: now.weekday - 1));
     
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Esta Semana',
-            style: Theme.of(context).textTheme.headlineSmall,
-          ),
-          const SizedBox(height: 16),
-          // Calendario semanal
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceAround,
-                    children: List.generate(7, (index) {
-                      final date = startOfWeek.add(Duration(days: index));
-                      final isToday = date.day == now.day;
-                      final isCompleted = index < 4; // Simulado
-                      
-                      return Column(
+    return FutureBuilder<Map<String, dynamic>>(
+      future: PersistenceService.getWeeklyStats(startOfWeek),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        
+        final weeklyStats = snapshot.data ?? {
+          'completedDays': 0,
+          'gymDays': 0,
+          'habitDays': 0,
+        };
+        
+        return SingleChildScrollView(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Esta Semana',
+                style: Theme.of(context).textTheme.headlineSmall,
+              ),
+              const SizedBox(height: 16),
+              // Calendario semanal
+              FutureBuilder<Map<String, List<String>>>(
+                future: PersistenceService.getHabitsProgress(),
+                builder: (context, progressSnapshot) {
+                  final progress = progressSnapshot.data ?? {};
+                  
+                  return Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
                         children: [
-                          Text(['L', 'M', 'X', 'J', 'V', 'S', 'D'][index]),
-                          const SizedBox(height: 8),
-                          CircleAvatar(
-                            radius: 20,
-                            backgroundColor: isToday 
-                                ? Theme.of(context).colorScheme.primary
-                                : isCompleted 
-                                    ? Colors.green 
-                                    : Theme.of(context).colorScheme.outline,
-                            child: Text(
-                              '${date.day}',
-                              style: TextStyle(
-                                color: isToday || isCompleted ? Colors.white : null,
-                                fontWeight: isToday ? FontWeight.bold : null,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Icon(
-                            isCompleted ? Icons.check_circle : Icons.radio_button_unchecked,
-                            size: 16,
-                            color: isCompleted ? Colors.green : Colors.grey,
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceAround,
+                            children: List.generate(7, (index) {
+                              final date = startOfWeek.add(Duration(days: index));
+                              final isToday = date.day == now.day && date.month == now.month && date.year == now.year;
+                              final dateStr = '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+                              final dayHabits = progress[dateStr] ?? [];
+                              final isCompleted = dayHabits.isNotEmpty;
+                              
+                              return Column(
+                                children: [
+                                  Text(['L', 'M', 'X', 'J', 'V', 'S', 'D'][index]),
+                                  const SizedBox(height: 8),
+                                  CircleAvatar(
+                                    radius: 20,
+                                    backgroundColor: isToday 
+                                        ? Theme.of(context).colorScheme.primary
+                                        : isCompleted 
+                                            ? Colors.green 
+                                            : Theme.of(context).colorScheme.outline,
+                                    child: Text(
+                                      '${date.day}',
+                                      style: TextStyle(
+                                        color: isToday || isCompleted ? Colors.white : null,
+                                        fontWeight: isToday ? FontWeight.bold : null,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Icon(
+                                    isCompleted ? Icons.check_circle : Icons.radio_button_unchecked,
+                                    size: 16,
+                                    color: isCompleted ? Colors.green : Colors.grey,
+                                  ),
+                                ],
+                              );
+                            }),
                           ),
                         ],
-                      );
-                    }),
-                  ),
-                ],
+                      ),
+                    ),
+                  );
+                },
               ),
-            ),
-          ),
-          const SizedBox(height: 16),
-          // Estadísticas de la semana
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Estadísticas Semanales',
-                    style: Theme.of(context).textTheme.titleMedium,
+              const SizedBox(height: 16),
+              // Estadísticas de la semana
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Estadísticas Semanales',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 12),
+                      _buildStatCard('Días Completados', '${weeklyStats['completedDays'] ?? 0}/7', 
+                          Icons.calendar_today, (weeklyStats['completedDays'] ?? 0) / 7.0),
+                      const SizedBox(height: 12),
+                      _buildStatCard('Días de Gym', '${weeklyStats['gymDays'] ?? 0}/7', 
+                          Icons.fitness_center, (weeklyStats['gymDays'] ?? 0) / 7.0),
+                      const SizedBox(height: 12),
+                      _buildStatCard('Hábitos Diarios', '${weeklyStats['habitDays'] ?? 0}/7', 
+                          Icons.track_changes, (weeklyStats['habitDays'] ?? 0) / 7.0),
+                    ],
                   ),
-                  const SizedBox(height: 12),
-                  _buildStatCard('Días Gym Completados', '4/5', Icons.fitness_center, 0.8),
-                  const SizedBox(height: 12),
-                  _buildStatCard('Hábitos Diarios', '5/7', Icons.track_changes, 0.71),
-                  const SizedBox(height: 12),
-                  _buildStatCard('Consistencia', '85%', Icons.trending_up, 0.85),
-                ],
+                ),
               ),
-            ),
+            ],
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
@@ -751,8 +935,18 @@ class _GoalsScreenState extends State<GoalsScreen> with TickerProviderStateMixin
       body: TabBarView(
         controller: _tabController,
         children: [
-          _buildWeeklyView(),
-          _buildMonthlyView(),
+          RefreshIndicator(
+            onRefresh: () async {
+              setState(() {}); // Forzar rebuild
+            },
+            child: _buildWeeklyView(),
+          ),
+          RefreshIndicator(
+            onRefresh: () async {
+              setState(() {}); // Forzar rebuild
+            },
+            child: _buildMonthlyView(),
+          ),
         ],
       ),
     );
